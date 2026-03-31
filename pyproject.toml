@@ -1,0 +1,17 @@
+[project]
+name = "mlops-env"
+version = "0.1.0"
+description = "MLOps OpenEnv environment for data triage, deployment, and incident response"
+authors = [{ name = "Vesper" }]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "requests",
+    "openai",
+    "pyyaml"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
