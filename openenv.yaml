@@ -1,0 +1,85 @@
+name: mlops-env
+version: "1.0.0"
+description: >
+  Production ML pipeline operations environment.
+  An AI agent manages real MLOps workflows: triaging data quality issues
+  before training runs, making deployment decisions under SLA constraints,
+  and resolving cascading production incidents in the correct causal order.
+  Models a genuine daily workflow at any company running ML in production.
+
+author: MLOpsEnv Team
+tags:
+  - mlops
+  - production
+  - data-quality
+  - deployment
+  - incident-response
+  - openenv
+
+entry_point: env.environment:MLOpsEnv
+
+observation_space:
+  type: object
+  schema: env.models.Observation
+
+action_space:
+  type: object
+  schema: env.models.Action
+
+reward_space:
+  type: object
+  schema: env.models.Reward
+
+tasks:
+  - id: data_quality_triage
+    difficulty: easy
+    max_steps: 30
+    description: >
+      Triage 20 incoming data records before a model training run.
+      Each record contains exactly one issue (null value, type mismatch,
+      statistical outlier, or duplicate) or is clean. Apply the correct
+      fix action per record. Grader scores correctness, parameter quality,
+      completeness, and data drift safety.
+
+  - id: deployment_decision
+    difficulty: medium
+    max_steps: 10
+    description: >
+      An A/B test is complete. Champion model is stable; challenger shows
+      +1.4% accuracy improvement but its error rate of 0.8% breaches the
+      0.5% SLA budget. Choose the correct deployment strategy with
+      appropriate parameters. Reasoning quality is graded deterministically.
+
+  - id: incident_cascade
+    difficulty: hard
+    max_steps: 15
+    description: >
+      Three simultaneous alerts are firing. One is the root cause
+      (feature_store latency spike at 847ms). Two are downstream effects.
+      Agent must investigate to identify root cause, then resolve components
+      in the correct causal order within 15 steps. Silencing alerts without
+      fixing is penalized. Optimal resolution takes 4 steps.
+
+reward:
+  type: dense
+  range: [0.0, 1.0]
+  description: >
+    Every step returns a scalar reward (0.0-1.0) computed as a weighted sum:
+      correctness  * 0.50  — was the action right?
+      efficiency   * 0.15  — did agent act without waste?
+      completeness * 0.25  — coverage of all open issues?
+      safety       * 0.10  — no metric regression or alert suppression?
+    Rewards are never sparse — partial progress always yields partial credit.
+
+server:
+  framework: fastapi
+  port: 7860
+  endpoints:
+    - method: POST
+      path: /reset
+    - method: POST
+      path: /step
+    - method: GET
+      path: /state
+    - method: GET
+      path: /health
