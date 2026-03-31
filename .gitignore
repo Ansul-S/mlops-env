@@ -1,0 +1,12 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Mac system files
+.DS_Store
+
+# Output files
+baseline_scores.json
+
+# Environment files
+.env
