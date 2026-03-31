@@ -9,7 +9,7 @@ dependencies = [
     "pydantic",
     "requests",
     "openai",
-    "pyyaml"
+    "pyyaml",
     "openenv-core>=0.2.0"
 ]
 
@@ -18,4 +18,4 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-server = "server:app"
+server = "server.app:main"
