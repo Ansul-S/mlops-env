@@ -1,3 +1,13 @@
+---
+title: MLOps Environment
+emoji: 🚀
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+.
 # MLOpsEnv
 
 **Production ML Pipeline Operations Environment for RL Agent Training**
