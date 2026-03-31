@@ -8,13 +8,31 @@ app_port: 7860
 pinned: false
 ---
 .
-# MLOpsEnv
+## MLOpsEnv
 
-**Production ML Pipeline Operations Environment for RL Agent Training**
+**A Real-World Reinforcement Learning Environment for Production ML Operations**
+
+MLOpsEnv simulates high-stakes decision-making in production ML systems — where agents must triage data issues, deploy models under SLA constraints, and resolve cascading system failures in the correct causal order.
+
+Unlike toy RL environments, every task reflects real operational workflows faced by ML teams in production.
+
+---
+
+## Summary
+
+- ✅ Fully OpenEnv compliant (step/reset/state + openenv.yaml)
+- ✅ 3 tasks (easy → medium → hard) with deterministic graders
+- ✅ Dense reward with safety constraints
+- ✅ Baseline inference agent with reproducible scores
+- ✅ Deployed on HuggingFace Spaces (Docker)
+
+---
+
+**Why it matters:** Current RL benchmarks ignore operational ML systems — this environment enables evaluation of agents in real-world deployment, reliability, and incident-response scenarios.
 
 An OpenEnv-compliant environment where an AI agent manages real MLOps workflows under operational pressure — triaging data quality issues before training runs, making deployment decisions under SLA constraints, and resolving cascading production incidents in the correct causal order.
 
-> Built for the OpenEnv Hackathon. Judged on real-world utility, task quality, environment design, and code quality.
+> Built for the OpenEnv Hackathon — focused on real-world utility, reproducibility, and system-level evaluation.
 
 ---
 
