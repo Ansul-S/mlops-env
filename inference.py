@@ -293,6 +293,9 @@ def run_task(
     obs         = result.observation
     obs_dict    = obs.model_dump(mode="json")
 
+    # ── Required structured output ────────────────────────────────────────────
+    print(f"[START] task={task_id}", flush=True)
+
     episode_rewards: list[float] = []
     step = 0
 
@@ -342,6 +345,8 @@ def run_task(
         )
         if feedback:
             print(f"          {feedback}")
+        # Required structured output
+        print(f"[STEP] step={step} reward={reward:.4f}", flush=True)
 
         if done:
             break
@@ -355,11 +360,15 @@ def run_task(
     if episode_info:
         print(f"  ✓ {episode_info.get('final_state_summary', '')}")
 
+    # Required structured output
+    final_score = round(episode_info.get("total_score", avg_score), 4)
+    print(f"[END] task={task_id} score={final_score} steps={step}", flush=True)
+
     return {
         "task_id":      task_id,
         "steps":        step,
         "avg_reward":   round(avg_score, 4),
-        "total_score":  round(episode_info.get("total_score", avg_score), 4),
+        "total_score":  final_score,
         "rewards":      [round(r, 4) for r in episode_rewards],
     }
 
