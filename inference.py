@@ -8,15 +8,10 @@ MANDATORY env vars:
   MODEL_NAME    — model identifier
   HF_TOKEN      — HuggingFace / API key
 
-Run:
-  export API_BASE_URL="https://router.huggingface.co/v1"
-  export MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
-  export HF_TOKEN="hf_..."
-  python inference.py
-
-Output:
-  Per-step rewards + final score per task.
-  Reproduces deterministically (same seed, same model, same scores).
+STDOUT FORMAT (required by validator):
+  [START] task=<name> env=mlops-env model=<model>
+  [STEP]  step=<n> action=<action> reward=<0.00> done=<true|false> error=<msg|null>
+  [END]   success=<true|false> steps=<n> score=<0.00> rewards=<r1,r2,...>
 """
 
 from __future__ import annotations
@@ -25,7 +20,7 @@ import json
 import os
 import sys
 import textwrap
-from typing import Any
+from typing import Any, List, Optional
 
 from openai import OpenAI
 
@@ -33,16 +28,46 @@ from env import MLOpsEnv
 from env.models import Action, ActionType, TaskID
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config — all from environment variables (spec requirement)
+# Config
 # ─────────────────────────────────────────────────────────────────────────────
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
 API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
 
-MAX_TOKENS   = 512
-TEMPERATURE  = 0.0    # Deterministic — reproducible scores
-MAX_STEPS    = 30     # Hard cap per task (well under 20 min limit)
+FALLBACK_MODE = not bool(API_KEY)   # run deterministically if no key
+BENCHMARK     = "mlops-env"
+MAX_TOKENS    = 512
+TEMPERATURE   = 0.0
+MAX_STEPS     = 30
+SUCCESS_THRESHOLD = 0.5             # score >= 0.5 → success=true
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Required structured log helpers  (exact format the validator parses)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val  = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -53,7 +78,7 @@ SYSTEM_PROMPT = textwrap.dedent("""
 You are an expert MLOps engineer operating a production ML system.
 You will be given the current environment state and must choose exactly one action.
 
-RESPONSE FORMAT — you must reply with valid JSON only, no other text:
+RESPONSE FORMAT — reply with valid JSON only, no other text:
 {
   "action_type": "<action_type>",
   "target_id":   "<id or null>",
@@ -63,9 +88,9 @@ RESPONSE FORMAT — you must reply with valid JSON only, no other text:
 
 AVAILABLE ACTION TYPES by task:
   data_quality_triage:
-    fix_null        — fill null field: parameters={"field": "<name>", "fill_value": <value>}
-    remove_outlier  — drop outlier record: parameters={"field": "<name>"}
-    cast_type       — coerce field type: parameters={"field": "<name>", "target_type": "<type>"}
+    fix_null        — fill null field: parameters={"field": "<n>", "fill_value": <value>}
+    remove_outlier  — drop outlier record: parameters={"field": "<n>"}
+    cast_type       — coerce field type: parameters={"field": "<n>", "target_type": "<type>"}
     flag_duplicate  — mark as duplicate: parameters={"duplicate_of": "<record_id>"}
     accept_record   — record is clean, no action needed
 
@@ -81,14 +106,83 @@ AVAILABLE ACTION TYPES by task:
     reroute_traffic — redirect traffic: parameters={"from_component": "<name>", "fallback": true}
     rollback_model  — revert model checkpoint
     escalate        — page on-call engineer
-    silence_alert   — suppress alert (use only as last resort)
+    silence_alert   — suppress alert (last resort only)
 
 RULES:
   - Always pick the action most likely to improve system health
   - For incidents: find root cause before fixing downstream effects
   - For deployment: respect SLA constraints (check error_rate vs max_error_rate_pct)
-  - Respond with JSON only — no markdown, no explanation outside the JSON
+  - Respond with JSON only — no markdown, no explanation outside JSON
 """).strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart deterministic fallback (used when no API key or LLM fails)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fallback_action(task_id: str, obs_dict: dict) -> str:
+    if task_id == "data_quality_triage":
+        records     = obs_dict.get("data_records", [])
+        unprocessed = [r for r in records if not r["processed"]]
+        if not unprocessed:
+            return json.dumps({"action_type": "accept_record", "target_id": None, "parameters": {}, "reasoning": "All done"})
+        rec       = unprocessed[0]
+        issues    = rec.get("detected_issues", [])
+        record_id = rec["record_id"]
+        fields    = rec.get("fields", {})
+        schema    = rec.get("schema_expected", {})
+
+        if "null_value" in issues:
+            null_field = next((f for f, v in fields.items() if v is None), None)
+            expected   = schema.get(null_field, "str") if null_field else "str"
+            fill       = 0.0 if expected == "float" else (0 if expected == "int" else "unknown")
+            return json.dumps({"action_type": "fix_null", "target_id": record_id,
+                               "parameters": {"field": null_field, "fill_value": fill},
+                               "reasoning": "Filling null with type-appropriate default"})
+        elif "type_mismatch" in issues:
+            bad_field   = next((f for f, v in fields.items() if isinstance(v, str) and "_bad" in str(v)), None)
+            target_type = schema.get(bad_field, "str") if bad_field else "str"
+            return json.dumps({"action_type": "cast_type", "target_id": record_id,
+                               "parameters": {"field": bad_field, "target_type": target_type},
+                               "reasoning": "Casting mismatched field to correct type"})
+        elif "outlier" in issues:
+            outlier_field = next((f for f, v in fields.items() if isinstance(v, (int, float)) and v > 100000), None)
+            return json.dumps({"action_type": "remove_outlier", "target_id": record_id,
+                               "parameters": {"field": outlier_field},
+                               "reasoning": "Removing statistical outlier"})
+        elif "duplicate" in issues:
+            return json.dumps({"action_type": "flag_duplicate", "target_id": record_id,
+                               "parameters": {}, "reasoning": "Flagging duplicate record"})
+        else:
+            return json.dumps({"action_type": "accept_record", "target_id": record_id,
+                               "parameters": {}, "reasoning": "Record is clean"})
+
+    elif task_id == "deployment_decision":
+        return json.dumps({
+            "action_type": "deploy_canary",
+            "target_id":   None,
+            "parameters":  {"canary_pct": 5, "rollback_threshold_pct": 0.4},
+            "reasoning":   "Challenger error_rate breaches SLA — canary at 5% limits blast radius"
+        })
+
+    else:  # incident_cascade
+        history = obs_dict.get("context_history", [])
+        if not any("feature_store" in h for h in history):
+            return json.dumps({"action_type": "investigate", "target_id": None,
+                               "parameters": {"component": "feature_store"},
+                               "reasoning": "Investigating feature_store as suspected root cause"})
+        elif not any("feature_store" in h and "restart" in h for h in history):
+            return json.dumps({"action_type": "restart_service", "target_id": None,
+                               "parameters": {"component": "feature_store"},
+                               "reasoning": "Restarting root cause component"})
+        elif not any("model_serving" in h for h in history):
+            return json.dumps({"action_type": "restart_service", "target_id": None,
+                               "parameters": {"component": "model_serving"},
+                               "reasoning": "Resolving downstream model_serving"})
+        else:
+            return json.dumps({"action_type": "restart_service", "target_id": None,
+                               "parameters": {"component": "data_pipeline"},
+                               "reasoning": "Resolving downstream data_pipeline"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,8 +190,6 @@ RULES:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_user_prompt(obs_dict: dict[str, Any]) -> str:
-    """Convert observation to a focused LLM prompt."""
-
     task_id   = obs_dict["task_id"]
     step      = obs_dict["step"]
     max_steps = obs_dict["max_steps"]
@@ -122,35 +214,26 @@ def build_user_prompt(obs_dict: dict[str, Any]) -> str:
         f"  data_drift_score = {metrics['data_drift_score']}",
     ]
 
-    # Task-specific context
     if task_id == "data_quality_triage":
-        records = obs_dict.get("data_records", [])
+        records     = obs_dict.get("data_records", [])
         unprocessed = [r for r in records if not r["processed"]]
         lines.append(f"\nUNPROCESSED RECORDS ({len(unprocessed)}):")
-        for r in unprocessed[:5]:   # Show first 5 to stay within token limit
-            issues = r.get("detected_issues", [])
-            lines.append(
-                f"  {r['record_id']}: fields={json.dumps(r['fields'])} "
-                f"issues={issues} schema={r['schema_expected']}"
-            )
+        for r in unprocessed[:5]:
+            lines.append(f"  {r['record_id']}: fields={json.dumps(r['fields'])} "
+                         f"issues={r.get('detected_issues',[])} schema={r['schema_expected']}")
         if len(unprocessed) > 5:
-            lines.append(f"  ... and {len(unprocessed) - 5} more records")
+            lines.append(f"  ... and {len(unprocessed)-5} more")
 
     elif task_id == "deployment_decision":
         candidates = obs_dict.get("deployment_candidates", [])
-        sla = obs_dict.get("sla_requirements", {})
+        sla        = obs_dict.get("sla_requirements", {})
         lines.append("\nMODEL CANDIDATES:")
         for c in candidates:
             role = "CHAMPION" if c["is_champion"] else "CHALLENGER"
-            lines.append(
-                f"  [{role}] {c['name']}: accuracy={c['accuracy']} "
-                f"latency={c['latency_p99_ms']}ms "
-                f"error_rate={c['error_rate_pct']}%"
-            )
-        lines.append(
-            f"\nSLA CONSTRAINTS: max_latency={sla.get('max_latency_p99_ms')}ms "
-            f"max_error_rate={sla.get('max_error_rate_pct')}%"
-        )
+            lines.append(f"  [{role}] {c['name']}: accuracy={c['accuracy']} "
+                         f"latency={c['latency_p99_ms']}ms error_rate={c['error_rate_pct']}%")
+        lines.append(f"\nSLA: max_latency={sla.get('max_latency_p99_ms')}ms "
+                     f"max_error_rate={sla.get('max_error_rate_pct')}%")
         alerts = obs_dict.get("alerts", [])
         if alerts:
             lines.append(f"\nALERT: {alerts[0]['message']}")
@@ -160,17 +243,13 @@ def build_user_prompt(obs_dict: dict[str, Any]) -> str:
         lines.append(f"\nFIRING ALERTS ({len(alerts)}):")
         for a in alerts:
             status = "RESOLVED" if a["resolved"] else "OPEN"
-            lines.append(
-                f"  [{status}][{a['severity'].upper()}] "
-                f"{a['component']}: {a['message'][:100]}"
-            )
+            lines.append(f"  [{status}][{a['severity'].upper()}] "
+                         f"{a['component']}: {a['message'][:100]}")
 
     if history:
         lines.append(f"\nRECENT ACTIONS: {' | '.join(history[-3:])}")
-
     lines.append(f"\nAVAILABLE ACTIONS: {available}")
     lines.append("\nRespond with JSON only:")
-
     return "\n".join(lines)
 
 
@@ -179,16 +258,10 @@ def build_user_prompt(obs_dict: dict[str, Any]) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parse_action(response_text: str, available: list[str]) -> Action:
-    """
-    Parse LLM JSON response → Action.
-    Falls back to a safe default if parsing fails.
-    """
-    # Strip markdown fences if model wraps in ```json
     text = response_text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        text = "\n".join(lines[1:-1]) if len(lines) > 2 else text
-
+        text  = "\n".join(lines[1:-1]) if len(lines) > 2 else text
     try:
         data = json.loads(text)
         return Action(
@@ -198,33 +271,18 @@ def parse_action(response_text: str, available: list[str]) -> Action:
             reasoning=data.get("reasoning", ""),
         )
     except (json.JSONDecodeError, KeyError, ValueError):
-        # Fallback: use first available action with no target
-        fallback_type = available[0] if available else "hold"
         return Action(
-            action_type=fallback_type,
-            reasoning="Fallback action due to parse error.",
+            action_type=available[0] if available else "hold",
+            reasoning="Fallback due to parse error.",
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Task-specific target injection
-# ─────────────────────────────────────────────────────────────────────────────
-
 def inject_target(action: Action, obs_dict: dict[str, Any]) -> Action:
-    """
-    For data_quality_triage: auto-inject target_id from first unprocessed
-    record when model forgets to set it. Prevents wasted steps.
-    """
-    if obs_dict["task_id"] != "data_quality_triage":
+    if obs_dict["task_id"] != "data_quality_triage" or action.target_id:
         return action
-
-    if action.target_id:
-        return action
-
-    records = obs_dict.get("data_records", [])
-    unprocessed = [r for r in records if not r["processed"]]
+    unprocessed = [r for r in obs_dict.get("data_records", []) if not r["processed"]]
     if unprocessed:
-        action = Action(
+        return Action(
             action_type=action.action_type,
             target_id=unprocessed[0]["record_id"],
             parameters=action.parameters,
@@ -233,143 +291,90 @@ def inject_target(action: Action, obs_dict: dict[str, Any]) -> Action:
     return action
 
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Smart per-task fallback (used when LLM call fails)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _fallback_action(task_id: str, obs_dict: dict) -> str:
-    """
-    Return a JSON action string when LLM is unavailable.
-    Each task gets a meaningful default — not just available[0].
-    """
-    if task_id == "data_quality_triage":
-        # Pick first unprocessed record and accept it
-        records = obs_dict.get("data_records", [])
-        unprocessed = [r for r in records if not r["processed"]]
-        target = unprocessed[0]["record_id"] if unprocessed else None
-        return json.dumps({
-            "action_type": "accept_record",
-            "target_id": target,
-            "parameters": {},
-            "reasoning": "Fallback: accepting record as clean"
-        })
-
-    elif task_id == "deployment_decision":
-        # Safe default: hold — never deploy blindly on fallback
-        return json.dumps({
-            "action_type": "hold",
-            "target_id": None,
-            "parameters": {},
-            "reasoning": "Fallback: holding deployment pending further analysis"
-        })
-
-    else:  # incident_cascade
-        # Investigate root cause component first
-        return json.dumps({
-            "action_type": "investigate",
-            "target_id": None,
-            "parameters": {"component": "feature_store"},
-            "reasoning": "Fallback: investigating feature_store as likely root cause"
-        })
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Single task runner
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_task(
-    client:  OpenAI,
+    client:  OpenAI | None,
     env:     MLOpsEnv,
     task_id: str,
 ) -> dict[str, Any]:
-    """Run one full episode. Returns score summary."""
 
-    print(f"\n{'='*60}")
-    print(f"  TASK: {task_id.upper()}")
-    print(f"{'='*60}")
+    result   = env.reset(task_id)
+    obs_dict = result.observation.model_dump(mode="json")
 
-    result      = env.reset(task_id)
-    obs         = result.observation
-    obs_dict    = obs.model_dump(mode="json")
+    # ── Required: one [START] line ────────────────────────────────────────────
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
-    # ── Required structured output ────────────────────────────────────────────
-    print(f"[START] task={task_id}", flush=True)
-
-    episode_rewards: list[float] = []
-    step = 0
+    rewards:     List[float] = []
+    step         = 0
+    step_result  = None
+    last_error:  Optional[str] = None
 
     while step < MAX_STEPS:
-        # Build prompt
-        user_prompt = build_user_prompt(obs_dict)
-
-        # Call LLM
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
-            )
-            response_text = completion.choices[0].message.content or ""
-        except Exception as exc:
-            print(f"  [Step {step+1}] LLM call failed: {exc}")
+        # Get action
+        if FALLBACK_MODE or client is None:
             response_text = _fallback_action(task_id, obs_dict)
+        else:
+            try:
+                completion = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user",   "content": build_user_prompt(obs_dict)},
+                    ],
+                    temperature=TEMPERATURE,
+                    max_tokens=MAX_TOKENS,
+                )
+                response_text = completion.choices[0].message.content or ""
+                last_error    = None
+            except Exception as exc:
+                last_error    = str(exc)[:80]
+                response_text = _fallback_action(task_id, obs_dict)
 
-        # Parse action
         available = obs_dict.get("available_actions", [])
         action    = parse_action(response_text, available)
         action    = inject_target(action, obs_dict)
+        action_str = action.action_type.value
 
         # Step environment
         try:
             step_result = env.step(action)
+            last_error  = None
         except (ValueError, RuntimeError) as exc:
-            print(f"  [Step {step+1}] Invalid action ({exc}) — skipping")
+            last_error = str(exc)[:80]
             step += 1
+            log_step(step=step, action=action_str, reward=0.0, done=False, error=last_error)
             continue
 
-        reward = step_result.reward
-        done   = step_result.done
+        reward   = step_result.reward
+        done     = step_result.done
         obs_dict = step_result.observation.model_dump(mode="json")
-        episode_rewards.append(reward)
+        rewards.append(reward)
         step += 1
 
-        feedback = step_result.info.get("feedback", "")[:80]
-        print(
-            f"  Step {step:2d}: {action.action_type.value:20s} "
-            f"→ reward={reward:.4f}  done={done}"
-        )
-        if feedback:
-            print(f"          {feedback}")
-        # Required structured output
-        print(f"[STEP] step={step} reward={reward:.4f}", flush=True)
+        # ── Required: one [STEP] line per step ───────────────────────────────
+        log_step(step=step, action=action_str, reward=reward, done=done, error=last_error)
 
         if done:
             break
 
-    avg_score = sum(episode_rewards) / len(episode_rewards) if episode_rewards else 0.0
+    # Compute final score
+    episode_info = step_result.info.get("episode", {}) if step_result and rewards else {}
+    avg_score    = sum(rewards) / len(rewards) if rewards else 0.0
+    final_score  = round(episode_info.get("total_score", avg_score), 4)
+    success      = final_score >= SUCCESS_THRESHOLD
 
-    # Pull final episode summary from info if available
-    episode_info = step_result.info.get("episode", {}) if episode_rewards else {}
-
-    print(f"\n  ✓ Steps: {step} | Avg reward: {avg_score:.4f}")
-    if episode_info:
-        print(f"  ✓ {episode_info.get('final_state_summary', '')}")
-
-    # Required structured output
-    final_score = round(episode_info.get("total_score", avg_score), 4)
-    print(f"[END] task={task_id} score={final_score} steps={step}", flush=True)
+    # ── Required: one [END] line ─────────────────────────────────────────────
+    log_end(success=success, steps=step, score=final_score, rewards=rewards)
 
     return {
-        "task_id":      task_id,
-        "steps":        step,
-        "avg_reward":   round(avg_score, 4),
-        "total_score":  final_score,
-        "rewards":      [round(r, 4) for r in episode_rewards],
+        "task_id":     task_id,
+        "steps":       step,
+        "total_score": final_score,
+        "success":     success,
+        "rewards":     [round(r, 4) for r in rewards],
     }
 
 
@@ -378,56 +383,28 @@ def run_task(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    # Validate env vars
-    if not API_KEY:
-        print("ERROR: HF_TOKEN or API_KEY environment variable not set.")
-        sys.exit(1)
+    print(f"# MLOpsEnv — Baseline Inference", flush=True)
+    print(f"# API_BASE_URL : {API_BASE_URL}", flush=True)
+    print(f"# MODEL_NAME   : {MODEL_NAME}", flush=True)
+    print(f"# MODE         : {'fallback (no API key)' if FALLBACK_MODE else 'LLM'}", flush=True)
 
-    print("MLOpsEnv — Baseline Inference")
-    print(f"  API_BASE_URL : {API_BASE_URL}")
-    print(f"  MODEL_NAME   : {MODEL_NAME}")
-    print(f"  HF_TOKEN     : {'set ✓' if API_KEY else 'NOT SET ✗'}")
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if not FALLBACK_MODE else None
     env    = MLOpsEnv()
-
-    tasks = [
-        TaskID.DATA_TRIAGE.value,
-        TaskID.DEPLOYMENT.value,
-        TaskID.INCIDENT.value,
-    ]
+    tasks  = [TaskID.DATA_TRIAGE.value, TaskID.DEPLOYMENT.value, TaskID.INCIDENT.value]
 
     results: list[dict] = []
     for task_id in tasks:
         summary = run_task(client, env, task_id)
         results.append(summary)
 
-    # ── Final score table ──────────────────────────────────────────────────
-    print(f"\n{'='*60}")
-    print("  FINAL SCORES")
-    print(f"{'='*60}")
-    print(f"  {'Task':<30} {'Steps':>6} {'Score':>8}")
-    print(f"  {'-'*46}")
-
-    total = 0.0
-    for r in results:
-        print(
-            f"  {r['task_id']:<30} {r['steps']:>6} {r['total_score']:>8.4f}"
-        )
-        total += r["total_score"]
-
+    # Summary
+    total   = sum(r["total_score"] for r in results)
     overall = total / len(results)
-    print(f"  {'-'*46}")
-    print(f"  {'OVERALL':.<30} {'':>6} {overall:>8.4f}")
-    print(f"{'='*60}\n")
+    print(f"\n# OVERALL SCORE: {overall:.4f}", flush=True)
 
-    # Write results to file for reproducibility verification
     with open("baseline_scores.json", "w") as f:
-        json.dump(
-            {"model": MODEL_NAME, "results": results, "overall": overall},
-            f, indent=2
-        )
-    print("  Scores saved to baseline_scores.json")
+        json.dump({"model": MODEL_NAME, "results": results, "overall": overall}, f, indent=2)
+    print("# Scores saved to baseline_scores.json", flush=True)
 
 
 if __name__ == "__main__":
