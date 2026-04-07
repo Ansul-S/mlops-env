@@ -33,7 +33,9 @@ from env.models import Action, ActionType, TaskID
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/Llama-3.3-70B-Instruct")
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+HF_TOKEN = os.getenv("HF_TOKEN")
+API_KEY  = HF_TOKEN or os.getenv("API_KEY", "")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 FALLBACK_MODE = not bool(API_KEY)   # run deterministically if no key
 BENCHMARK     = "mlops-env"
@@ -383,28 +385,11 @@ def run_task(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print(f"# MLOpsEnv — Baseline Inference", flush=True)
-    print(f"# API_BASE_URL : {API_BASE_URL}", flush=True)
-    print(f"# MODEL_NAME   : {MODEL_NAME}", flush=True)
-    print(f"# MODE         : {'fallback (no API key)' if FALLBACK_MODE else 'LLM'}", flush=True)
-
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY) if not FALLBACK_MODE else None
-    env    = MLOpsEnv()
-    tasks  = [TaskID.DATA_TRIAGE.value, TaskID.DEPLOYMENT.value, TaskID.INCIDENT.value]
+    env = MLOpsEnv()
 
-    results: list[dict] = []
-    for task_id in tasks:
-        summary = run_task(client, env, task_id)
-        results.append(summary)
-
-    # Summary
-    total   = sum(r["total_score"] for r in results)
-    overall = total / len(results)
-    print(f"\n# OVERALL SCORE: {overall:.4f}", flush=True)
-
-    with open("baseline_scores.json", "w") as f:
-        json.dump({"model": MODEL_NAME, "results": results, "overall": overall}, f, indent=2)
-    print("# Scores saved to baseline_scores.json", flush=True)
+    task_id = TaskID.DATA_TRIAGE.value
+    run_task(client, env, task_id)
 
 
 if __name__ == "__main__":
