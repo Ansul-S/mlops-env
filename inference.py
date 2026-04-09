@@ -111,23 +111,29 @@ def fallback(task_id, obs):
                 "parameters": {"canary_pct": 5, "rollback_threshold_pct": 0.4},
                 "reasoning": "canary — challenger breaches SLA"}
     else:
-        hist = obs.get("context_history", [])
-        if not any("feature_store" in h for h in hist):
+        # Use metrics to track progress — history strings don't contain component names
+        step     = obs.get("step", 0)
+        metrics  = obs.get("system_metrics", {})
+        latency  = metrics.get("latency_p99_ms", 999.0)
+        alerts   = obs.get("alerts", [])
+        resolved = sum(1 for a in alerts if a.get("resolved", False))
+
+        if step == 0:
             return {"action_type": "investigate", "target_id": None,
                     "parameters": {"component": "feature_store"},
-                    "reasoning": "investigate root cause"}
-        elif not any("feature_store" in h and "restart" in h for h in hist):
+                    "reasoning": "investigate feature_store as root cause"}
+        elif latency > 100.0:
             return {"action_type": "restart_service", "target_id": None,
                     "parameters": {"component": "feature_store"},
-                    "reasoning": "fix root cause"}
-        elif not any("model_serving" in h for h in hist):
+                    "reasoning": "restart feature_store to fix root cause"}
+        elif resolved < 2:
             return {"action_type": "restart_service", "target_id": None,
                     "parameters": {"component": "model_serving"},
-                    "reasoning": "fix downstream"}
+                    "reasoning": "restart model_serving downstream"}
         else:
             return {"action_type": "restart_service", "target_id": None,
                     "parameters": {"component": "data_pipeline"},
-                    "reasoning": "fix downstream"}
+                    "reasoning": "restart data_pipeline downstream"}
 
 # ── LLM action ────────────────────────────────────────────────────────────────
 
