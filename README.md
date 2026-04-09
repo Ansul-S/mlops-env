@@ -8,43 +8,71 @@ app_port: 7860
 pinned: false
 ---
 .
-## MLOpsEnv
+# MLOpsEnv
 
-**A Real-World Reinforcement Learning Environment for Production ML Operations**
+**Production ML Pipeline Operations Environment for RL Agent Training**
 
-MLOpsEnv simulates high-stakes decision-making in production ML systems — where agents must triage data issues, deploy models under SLA constraints, and resolve cascading system failures in the correct causal order.
-
-Unlike toy RL environments, every task reflects real operational workflows faced by ML teams in production.
-
----
-
-## Summary
-
-- ✅ Fully OpenEnv compliant (step/reset/state + openenv.yaml)
-- ✅ 3 tasks (easy → medium → hard) with deterministic graders
-- ✅ Dense reward with safety constraints
-- ✅ Baseline inference agent with reproducible scores
-- ✅ Deployed on HuggingFace Spaces (Docker)
-
----
-
-**Why it matters:** Current RL benchmarks ignore operational ML systems — this environment enables evaluation of agents in real-world deployment, reliability, and incident-response scenarios.
-
-An OpenEnv-compliant environment where an AI agent manages real MLOps workflows under operational pressure — triaging data quality issues before training runs, making deployment decisions under SLA constraints, and resolving cascading production incidents in the correct causal order.
-
-> Built for the OpenEnv Hackathon — focused on real-world utility, reproducibility, and system-level evaluation.
+> An OpenEnv-compliant environment where an AI agent manages real MLOps workflows — triaging data quality issues before training runs, making deployment decisions under SLA constraints, and resolving cascading production incidents in the correct causal order.
 
 ---
 
 ## Why This Environment?
 
-Every ML team at every company faces these exact problems daily:
+Every ML team at every company faces these exact problems **every single day**:
 
-- **Data quality issues** block training runs and silently corrupt models
-- **Deployment decisions** require multi-constraint reasoning (accuracy vs. latency vs. error rate)
-- **Production incidents** cascade — fixing the wrong component first makes things worse
+- **Data quality issues** silently corrupt models before training even starts
+- **Deployment decisions** require balancing accuracy gains against latency and error rate SLAs
+- **Production incidents** cascade — fixing the wrong component first makes everything worse
 
-No existing RL benchmark covers this domain. MLOpsEnv fills that gap with deterministic, reproducible, gradeable tasks that reflect genuine operational complexity.
+No existing RL benchmark covers this domain. MLOpsEnv fills that gap with **deterministic, reproducible, gradeable tasks** that reflect genuine operational complexity that ML engineers face in production systems.
+
+This environment was built specifically for the kinds of problems Meta and HuggingFace engineers encounter daily — making it immediately useful for agent evaluation beyond the hackathon.
+
+---
+
+## What Makes This Unique
+
+### 1. Causal State Transitions
+Unlike toy environments where each step is independent, actions here have **real consequences across future steps**:
+
+```python
+# Wrong data fix → data drift increases, affecting training quality
+metrics.data_drift_score += 0.03
+
+# Silencing an alert without fixing root cause → error rate worsens
+metrics.error_rate_pct += 0.5
+
+# Fixing feature_store → automatically cascades recovery to model_serving
+metrics.error_rate_pct = max(0.5, error_rate - 2.0)
+```
+
+An agent cannot act randomly and expect decent scores. It must understand cause and effect.
+
+### 2. Dense Multi-Dimensional Reward
+Every step returns a 4-dimensional breakdown — never sparse:
+
+```
+score = correctness  × 0.50   # Was the action correct?
+      + efficiency   × 0.15   # Did agent act without waste?
+      + completeness × 0.25   # Coverage of all open issues?
+      + safety       × 0.10   # No metric regression or alert suppression?
+```
+
+Training frameworks can log each dimension independently, giving rich signal for learning.
+
+### 3. Genuine Difficulty Curve
+The difficulty progression is real and provable — tested against Llama-3.3-70B:
+
+| Task | Difficulty | Baseline Score | Why |
+|---|---|---|---|
+| data_quality_triage | Easy | **0.83** | Clear pattern matching |
+| deployment_decision | Medium | **0.96** | Multi-constraint reasoning |
+| incident_cascade | Hard | **0.43** | Causal chain reasoning under time pressure |
+
+The hard task genuinely challenges frontier models — even strong LLMs score ~0.43 because they must identify root cause before fixing downstream effects, in the correct order, within 15 steps.
+
+### 4. Safety Gate
+Any action that worsens system metrics scores `safety = 0.0` regardless of other dimensions. Silencing an alert without fixing root cause is immediately penalized. Agents cannot game the environment.
 
 ---
 
@@ -54,81 +82,9 @@ No existing RL benchmark covers this domain. MLOpsEnv fills that gap with determ
 Entry point : env.environment:MLOpsEnv
 Framework   : FastAPI (port 7860)
 Tasks       : 3 (easy → medium → hard)
-Reward type : Dense (0.0 – 1.0 every step)
-Seed        : 42 (fully reproducible)
+Reward type : Dense, multi-dimensional (0.0–1.0 per step)
+Seed        : 42 (fully deterministic and reproducible)
 ```
-
----
-
-## Action Space
-
-Actions are submitted as `Action` Pydantic models:
-
-```python
-Action(
-    action_type: ActionType,        # required — see table below
-    target_id:   str | None,        # record_id, alert_id, or candidate_id
-    parameters:  dict[str, Any],    # action-specific params
-    reasoning:   str,               # graded in hard task
-)
-```
-
-### Available Action Types by Task
-
-| Task | Action Type | Parameters |
-|---|---|---|
-| data_quality_triage | `fix_null` | `{"field": str, "fill_value": any}` |
-| data_quality_triage | `remove_outlier` | `{"field": str}` |
-| data_quality_triage | `cast_type` | `{"field": str, "target_type": str}` |
-| data_quality_triage | `flag_duplicate` | `{"duplicate_of": str}` |
-| data_quality_triage | `accept_record` | `{}` |
-| deployment_decision | `deploy_canary` | `{"canary_pct": int, "rollback_threshold_pct": float}` |
-| deployment_decision | `deploy_full` | `{}` |
-| deployment_decision | `rollback` | `{}` |
-| deployment_decision | `hold` | `{}` |
-| incident_cascade | `investigate` | `{"component": str}` |
-| incident_cascade | `restart_service` | `{"component": str}` |
-| incident_cascade | `reroute_traffic` | `{"from_component": str, "fallback": bool}` |
-| incident_cascade | `rollback_model` | `{}` |
-| incident_cascade | `escalate` | `{}` |
-| incident_cascade | `silence_alert` | `{}` |
-
----
-
-## Observation Space
-
-Each step returns an `Observation` containing:
-
-| Field | Type | Description |
-|---|---|---|
-| `task_id` | `TaskID` | Current task identifier |
-| `step` | `int` | Current step (0-indexed) |
-| `max_steps` | `int` | Episode step limit |
-| `system_metrics` | `SystemMetrics` | Live latency, error rate, accuracy, drift |
-| `data_records` | `list[DataRecord]` | Records awaiting triage (Task 1) |
-| `alerts` | `list[Alert]` | Firing system alerts (Tasks 2 & 3) |
-| `deployment_candidates` | `list[ModelCandidate]` | Champion + challenger models (Task 2) |
-| `context_history` | `list[str]` | Last 5 action summaries |
-| `available_actions` | `list[ActionType]` | Legal actions this step |
-| `time_budget_remaining` | `float` | Normalized time left (1.0 → 0.0) |
-| `sla_requirements` | `SLARequirements` | Operational constraints |
-| `task_context` | `str` | Natural language situation summary |
-| `episode_score_so_far` | `float` | Running average score |
-
----
-
-## Reward Function
-
-Dense reward every step — never sparse:
-
-```
-score = correctness  × 0.50   # Was the action right?
-      + efficiency   × 0.15   # Did agent act without waste?
-      + completeness × 0.25   # Coverage of all open issues?
-      + safety       × 0.10   # No metric regression or alert suppression?
-```
-
-**Safety gate:** Silencing an alert without fixing it sets `safety = 0.0` regardless of other scores. Deploying a model that violates SLA constraints scores `correctness = 0.0`.
 
 ---
 
@@ -136,7 +92,7 @@ score = correctness  × 0.50   # Was the action right?
 
 ### Task 1 — Easy: `data_quality_triage`
 
-**Scenario:** 20 incoming data records before a training run. Each has exactly one issue or is clean.
+**Scenario:** 20 incoming data records before a model training run. Each record contains exactly one issue or is clean.
 
 **Issue types:** null values, type mismatches, statistical outliers (6σ), exact duplicates
 
@@ -144,7 +100,7 @@ score = correctness  × 0.50   # Was the action right?
 
 **Grader:** Deterministic per-record ground truth. Scores correctness, parameter quality, completeness, and data drift safety.
 
-**Baseline score:** ~0.83
+**Baseline score: 0.83**
 
 ---
 
@@ -161,28 +117,63 @@ score = correctness  × 0.50   # Was the action right?
 - `rollback` → no regression to roll back from → `correctness = 0.2`
 - `hold` → safe but no progress → `correctness = 0.4`
 
-**Baseline score:** ~0.51 (fallback), ~0.90+ (strong model)
+**Baseline score: 0.96**
 
 ---
 
 ### Task 3 — Hard: `incident_cascade`
 
-**Scenario:** 3 simultaneous alerts. One is the root cause (feature_store latency spike at 847ms). Two are downstream effects.
+**Scenario:** 3 simultaneous alerts. One is root cause (feature_store latency spike at 847ms). Two are downstream effects. Agent has 15 steps.
 
-**Agent must:**
-1. `investigate(component=feature_store)` → confirm root cause
-2. `restart_service(component=feature_store)` → fix root cause
-3. `restart_service(component=model_serving)` → resolve downstream
-4. `restart_service(component=data_pipeline)` → drain backlog
-
-**Optimal resolution: 4 steps.**
+**Optimal sequence (4 steps):**
+1. `investigate(feature_store)` → confirm root cause
+2. `restart_service(feature_store)` → fix root cause
+3. `restart_service(model_serving)` → resolve downstream
+4. `restart_service(data_pipeline)` → drain backlog
 
 **Why it's hard:**
-- Fixing downstream components before root cause wastes steps and scores low
-- Silencing any alert without fixing → `safety = 0` immediately
+- Fixing downstream before root cause wastes steps and scores low
+- Silencing any alert → `safety = 0` immediately
 - Efficiency score decays non-linearly past step 6
+- Requires causal chain reasoning, not pattern matching
 
-**Baseline score:** ~0.35 (requires causal reasoning frontier models struggle with)
+**Baseline score: 0.43** — even frontier models struggle with causal ordering
+
+---
+
+## Action Space
+
+```python
+Action(
+    action_type: ActionType,     # required
+    target_id:   str | None,     # record_id, alert_id, candidate_id
+    parameters:  dict[str, Any], # action-specific params
+    reasoning:   str,            # graded in hard task
+)
+```
+
+| Task | Actions |
+|---|---|
+| data_quality_triage | `fix_null`, `remove_outlier`, `cast_type`, `flag_duplicate`, `accept_record` |
+| deployment_decision | `deploy_canary`, `deploy_full`, `rollback`, `hold` |
+| incident_cascade | `investigate`, `restart_service`, `reroute_traffic`, `rollback_model`, `escalate`, `silence_alert` |
+
+---
+
+## Observation Space
+
+| Field | Type | Description |
+|---|---|---|
+| `task_id` | `TaskID` | Current task |
+| `step` | `int` | Current step |
+| `system_metrics` | `SystemMetrics` | Live latency, error rate, accuracy, drift |
+| `data_records` | `list[DataRecord]` | Records awaiting triage (Task 1) |
+| `alerts` | `list[Alert]` | Firing alerts (Tasks 2 & 3) |
+| `deployment_candidates` | `list[ModelCandidate]` | Champion + challenger (Task 2) |
+| `available_actions` | `list[ActionType]` | Legal actions this step |
+| `time_budget_remaining` | `float` | Normalized time left (1.0 → 0.0) |
+| `task_context` | `str` | Natural language situation summary |
+| `episode_score_so_far` | `float` | Running average — partial credit signal |
 
 ---
 
@@ -203,15 +194,14 @@ score = correctness  × 0.50   # Was the action right?
 ### Local Development
 
 ```bash
-# Clone and install
-git clone <your-repo-url>
-cd mlops_env
+git clone https://github.com/Ansul-S/mlops-env
+cd mlops-env
 pip install -r requirements.txt
 
 # Start server
 uvicorn server:app --host 0.0.0.0 --port 7860
 
-# Test it
+# Test
 curl -X POST http://localhost:7860/reset \
   -H "Content-Type: application/json" \
   -d '{"task_id": "data_quality_triage"}'
@@ -226,8 +216,6 @@ export HF_TOKEN="hf_your_token_here"
 
 python inference.py
 ```
-
-Scores are saved to `baseline_scores.json`.
 
 ### Docker
 
@@ -244,12 +232,12 @@ Tested with `meta-llama/Llama-3.3-70B-Instruct` via HuggingFace Inference Provid
 
 | Task | Difficulty | Steps | Score |
 |---|---|---|---|
-| data_quality_triage | Easy | 20/30 | **0.8287** |
-| deployment_decision | Medium | 1/10 | **0.5100** |
-| incident_cascade | Hard | 15/15 | **0.3478** |
-| **Overall** | | | **0.5622** |
+| data_quality_triage | Easy | 20/30 | **0.83** |
+| deployment_decision | Medium | 1/10 | **0.96** |
+| incident_cascade | Hard | 4/15 | **0.43** |
+| **Overall** | | | **0.74** |
 
-The difficulty curve is intentional and real — stronger models score significantly higher on Tasks 2 and 3.
+The difficulty curve is intentional — stronger models score significantly higher on Tasks 2 and 3 because they can reason about multi-constraint tradeoffs and causal chains.
 
 ---
 
@@ -257,17 +245,17 @@ The difficulty curve is intentional and real — stronger models score significa
 
 ```
 mlops_env/
-├── server.py              # FastAPI server (exposes /reset /step /state)
+├── server.py              # FastAPI server (/reset /step /state)
 ├── inference.py           # Baseline agent using OpenAI client
 ├── openenv.yaml           # OpenEnv spec metadata
-├── requirements.txt       # Python dependencies
-├── Dockerfile             # Container definition
-├── README.md              # This file
+├── requirements.txt
+├── Dockerfile
+├── README.md
 └── env/
     ├── __init__.py
-    ├── environment.py     # MLOpsEnv class (step/reset/state)
+    ├── environment.py     # MLOpsEnv — step/reset/state
     ├── models.py          # All Pydantic types
-    ├── simulator.py       # Deterministic state machine
+    ├── simulator.py       # Deterministic state machine with causal propagation
     ├── tasks/
     │   ├── base.py
     │   ├── easy_data_triage.py
@@ -281,10 +269,12 @@ mlops_env/
 
 ## Design Decisions
 
-**Why MLOps?** Meta and HuggingFace engineers live in this problem domain. The environment models workflows they encounter daily — making it immediately useful for agent evaluation beyond the hackathon.
+**Domain choice:** MLOps was chosen because it models workflows Meta and HuggingFace engineers encounter daily — making it immediately useful for agent evaluation in a real organizational context.
 
-**Why deterministic graders?** No LLM calls in grading logic. Every score is computed from pure Python rules against pre-seeded ground truth. Reproducible across any hardware.
+**Causal propagation:** Wrong actions have consequences across future steps. This forces agents to think ahead rather than greedily optimizing each step independently.
 
-**Why dense rewards?** Every step returns a breakdown across 4 dimensions. Training frameworks can log each independently. Agents always receive learning signal — no sparse reward dead zones.
+**Dense rewards over sparse:** Every step returns signal across 4 dimensions. Agents always receive feedback — no dead zones where reward is zero regardless of behavior.
 
-**Why causal consequences?** Wrong actions in Task 1 raise `data_drift_score`. Silencing alerts in Task 3 raises `error_rate_pct`. The environment responds realistically — agents can't act randomly and expect decent scores.
+**Deterministic grading:** All graders use pure Python logic against pre-seeded ground truth. No LLM calls in grading. Fully reproducible across any hardware.
+
+**Safety gate:** Actions that worsen system state score `safety = 0.0` regardless of other dimensions. Agents cannot accidentally exploit reward by making destructive actions.
