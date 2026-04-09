@@ -50,6 +50,8 @@ def log_start(task, model):
     sys.stdout.flush()
 
 def log_step(step, action, reward, done, error=None):
+    reward = max(0.0051, min(0.9949, float(reward)))  # strict (0,1)
+    reward = max(0.0051, min(0.9949, float(reward)))  # strict (0,1)
     err    = str(error)[:60] if error else "null"
     done_s = "true" if done else "false"
     line   = "[STEP] step=%d action=%s reward=%.2f done=%s error=%s" % (
@@ -59,7 +61,9 @@ def log_step(step, action, reward, done, error=None):
 
 def log_end(success, steps, score, rewards):
     if not rewards:
-        rewards = [0.0]
+        rewards = [0.01]
+    rewards = [max(0.0051, min(0.9949, float(r))) for r in rewards]
+    score   = max(0.0051, min(0.9949, float(score)))
     rstr   = ",".join("%.2f" % r for r in rewards)
     succ   = "true" if success else "false"
     line   = "[END] success=%s steps=%d score=%.2f rewards=%s" % (
