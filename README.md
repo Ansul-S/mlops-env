@@ -224,7 +224,7 @@ Tested with `meta-llama/Llama-3.3-70B-Instruct` via HuggingFace Inference Provid
 | data_quality_triage | Easy | 20/30 | **0.83** |
 | deployment_decision | Medium | 1/10 | **0.30** |
 | incident_cascade | Hard | 4/15 | **0.43** |
-| **Overall** | | | **0.74** |
+| **Overall** | | | **0.52** |
 
 The difficulty curve is intentional — stronger models score significantly higher on Tasks 2 and 3 because they can reason about multi-constraint tradeoffs and causal chains.
 
