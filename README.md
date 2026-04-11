@@ -256,6 +256,7 @@ A capable LLM agent scores significantly higher — especially on Tasks 2 and 3 
 
 ## Project Structure
 
+```text
 mlops_env/
 ├── server.py              # FastAPI + WebSocket server
 ├── client.py              # Async HTTP client for MLOpsEnv
@@ -267,19 +268,19 @@ mlops_env/
 ├── tests/
 │   └── test_mlops_env.py  # Test suite
 └── env/
-├── init.py
-├── environment.py     # MLOpsEnv — step/reset/state
-├── models.py          # All Pydantic types
-├── simulator.py       # Seed-based state machine with causal propagation
-├── tasks/
-│   ├── base.py
-│   ├── easy_data_triage.py
-│   ├── medium_deployment.py
-│   └── hard_incident.py
-└── graders/
-└── init.py
-
----
+    ├── __init__.py
+    ├── environment.py     # MLOpsEnv — step/reset/state
+    ├── models.py          # All Pydantic types
+    ├── simulator.py       # Seed-based state machine with causal propagation
+    ├── tasks/
+    │   ├── __init__.py
+    │   ├── base.py
+    │   ├── easy_data_triage.py
+    │   ├── medium_deployment.py
+    │   └── hard_incident.py
+    └── graders/
+        └── __init__.py
+```
 
 ## Design Decisions
 
