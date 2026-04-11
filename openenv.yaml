@@ -9,12 +9,14 @@ description: >
 
 author: MLOpsEnv Team
 tags:
-  - mlops
-  - production
-  - data-quality
-  - deployment
-  - incident-response
   - openenv
+  - mlops
+  - production-systems
+  - causal-reasoning
+  - incident-response
+  - deployment
+  - multi-step
+  - data-quality
 
 entry_point: env.environment:MLOpsEnv
 
