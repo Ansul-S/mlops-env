@@ -35,6 +35,7 @@ from env.models import Action, ResetResult, StateResult, StepResult, TaskID
 
 class ResetRequest(BaseModel):
     task_id: str = TaskID.DATA_TRIAGE.value
+    seed: int | None = None   # Fix C: optional seed for reproducibility
 
 
 class StepRequest(BaseModel):
@@ -97,7 +98,7 @@ def reset(body: ResetRequest = ResetRequest()) -> ResetResult:
     Returns initial observation.
     """
     try:
-        result = _env.reset(body.task_id)
+        result = _env.reset(body.task_id, seed=body.seed)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

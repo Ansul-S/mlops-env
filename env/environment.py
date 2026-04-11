@@ -71,13 +71,14 @@ class MLOpsEnv:
     # OpenEnv spec — primary interface
     # ─────────────────────────────────────────────────────────────────────────
 
-    def reset(self, task_id: str | TaskID = TaskID.DATA_TRIAGE) -> ResetResult:
+    def reset(self, task_id: str | TaskID = TaskID.DATA_TRIAGE, seed: int | None = None) -> ResetResult:
         """
         Reset environment for a new episode.
 
         Args:
             task_id: One of "data_quality_triage", "deployment_decision",
                      "incident_cascade" (or TaskID enum).
+            seed:    Optional integer seed for reproducibility. If None, random seed used.
 
         Returns:
             ResetResult containing the initial Observation.
@@ -95,7 +96,8 @@ class MLOpsEnv:
         self._task_id = task_id
         task_cls      = TASK_REGISTRY[task_id]
         self._task    = task_cls()
-        self._sim     = self._task.build_simulator()
+        # Fix C: pass seed through to simulator
+        self._sim     = MLOpsSimulator(task_id, seed=seed)
 
         self._episode_rewards    = []
         self._episode_breakdowns = []
