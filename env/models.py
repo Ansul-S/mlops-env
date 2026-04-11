@@ -88,14 +88,17 @@ class DataRecord(BaseModel):
     fields:          dict[str, Any]
     schema_expected: dict[str, str]          # field → expected Python type string
     detected_issues: list[DataIssueType] = Field(default_factory=list)
+    
     ground_truth_action: Optional[str] = Field(
         default=None,
         exclude=True,   # NEVER serialized — grader use only
+        repr=False,     # Hidden from console logs and print()
         description="Correct action key — used only by grader, not shown to agent"
     )
     ground_truth_params: dict[str, Any] = Field(
         default_factory=dict,
         exclude=True,   # NEVER serialized — grader use only
+        repr=False,     # Hidden from console logs and print()
     )
     processed: bool = False
 
@@ -107,9 +110,11 @@ class Alert(BaseModel):
     component:         Component
     message:           str
     triggered_at_step: int
+    
     is_root_cause:     bool = Field(
         default=False,
         exclude=True,   # NEVER serialized — grader use only
+        repr=False,     # Hidden from console logs and print()
         description="Internal flag — used by grader only"
     )
     acknowledged:  bool = False
