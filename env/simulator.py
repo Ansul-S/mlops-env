@@ -311,6 +311,9 @@ class MLOpsSimulator:
         # Deployment decision tracking
         self.deployment_action_taken: str | None = None
         self.deployment_params: dict[str, Any] = {}
+        self.deployment_phase: str = "strategy"  # "strategy" | "monitoring" | "terminal"
+        self.canary_pct: float = 0.0             # current canary traffic %
+        self.monitoring_step: int = 0            # steps spent in monitoring
 
         self._init_task()
 
@@ -439,7 +442,6 @@ class MLOpsSimulator:
             done = self._apply_triage_action(action, feedback_parts)
         elif self.task_id == TaskID.DEPLOYMENT:
             done = self._apply_deployment_action(action, feedback_parts)
-            done = True
         elif self.task_id == TaskID.INCIDENT:
             done = self._apply_incident_action(action, feedback_parts)
 
@@ -476,22 +478,107 @@ class MLOpsSimulator:
         return all(r.processed for r in self.data_records)
 
     def _apply_deployment_action(self, action: Action, feedback: list[str]) -> bool:
-        self.deployment_action_taken = action.action_type.value
-        self.deployment_params = action.parameters
+        """
+        Multi-step deployment (Fix F):
+        Phase 1 — strategy selection (step 1)
+        Phase 2 — monitoring with metric evolution (steps 2-N)
+        Phase 3 — terminal decision (promote/rollback)
+        """
+        chal  = next(c for c in self.deployment_candidates if not c.is_champion)
+        champ = next(c for c in self.deployment_candidates if c.is_champion)
 
-        if action.action_type == ActionType.DEPLOY_CANARY:
-            pct = action.parameters.get("canary_pct", 0)
-            feedback.append(f"Canary deployment initiated at {pct}% traffic.")
-            self.metrics.model_accuracy += 0.014 * (pct / 100)
-        elif action.action_type == ActionType.DEPLOY_FULL:
-            chal = next(c for c in self.deployment_candidates if not c.is_champion)
-            self.metrics.model_accuracy = chal.accuracy
-            self.metrics.error_rate_pct = chal.error_rate_pct
-            feedback.append("Full deployment to challenger completed.")
-        elif action.action_type == ActionType.ROLLBACK:
-            feedback.append("Rolled back to champion.")
-        elif action.action_type == ActionType.HOLD:
-            feedback.append("Decision deferred.")
+        if self.deployment_phase == "strategy":
+            # Step 1: Choose initial strategy
+            self.deployment_action_taken = action.action_type.value
+            self.deployment_params = action.parameters
+
+            if action.action_type == ActionType.DEPLOY_CANARY:
+                self.canary_pct = float(action.parameters.get("canary_pct", 10))
+                self.deployment_phase = "monitoring"
+                # Metrics: partial shift toward challenger proportional to canary %
+                mix = self.canary_pct / 100.0
+                self.metrics.error_rate_pct = (
+                    champ.error_rate_pct * (1 - mix) + chal.error_rate_pct * mix
+                )
+                self.metrics.model_accuracy = (
+                    champ.accuracy * (1 - mix) + chal.accuracy * mix
+                )
+                feedback.append(
+                    f"Canary at {self.canary_pct}% initiated. "
+                    f"Monitoring error_rate={self.metrics.error_rate_pct:.2f}%. "
+                    f"Continue monitoring or promote/rollback."
+                )
+                return False  # Not done — monitoring phase begins
+
+            elif action.action_type == ActionType.DEPLOY_FULL:
+                self.metrics.model_accuracy = chal.accuracy
+                self.metrics.error_rate_pct = chal.error_rate_pct
+                self.deployment_phase = "terminal"
+                feedback.append(
+                    f"Full deployment. error_rate={chal.error_rate_pct}% "
+                    f"(SLA={self.sla.max_error_rate_pct}%)."
+                )
+                return True
+
+            elif action.action_type == ActionType.ROLLBACK:
+                self.metrics.model_accuracy = champ.accuracy
+                self.metrics.error_rate_pct = champ.error_rate_pct
+                self.deployment_phase = "terminal"
+                feedback.append("Rolled back to champion.")
+                return True
+
+            elif action.action_type == ActionType.HOLD:
+                # Stay in strategy phase — efficiency decays
+                feedback.append("Holding. Metrics unchanged. Decide soon.")
+                return False
+
+        elif self.deployment_phase == "monitoring":
+            self.monitoring_step += 1
+            # Metrics evolve: error_rate trends toward challenger rate each step
+            self.metrics.error_rate_pct = min(
+                chal.error_rate_pct,
+                self.metrics.error_rate_pct + (chal.error_rate_pct - self.metrics.error_rate_pct) * 0.3
+            )
+
+            if action.action_type == ActionType.DEPLOY_FULL:
+                # Promote canary to full
+                self.metrics.model_accuracy = chal.accuracy
+                self.metrics.error_rate_pct = chal.error_rate_pct
+                self.deployment_phase = "terminal"
+                self.deployment_action_taken = "deploy_full"
+                feedback.append(
+                    f"Canary promoted to full. "
+                    f"Final error_rate={chal.error_rate_pct}%."
+                )
+                return True
+
+            elif action.action_type == ActionType.ROLLBACK:
+                self.metrics.model_accuracy = champ.accuracy
+                self.metrics.error_rate_pct = champ.error_rate_pct
+                self.deployment_phase = "terminal"
+                self.deployment_action_taken = "rollback"
+                feedback.append(
+                    f"Rolled back after monitoring. "
+                    f"error_rate was {self.metrics.error_rate_pct:.2f}%."
+                )
+                return True
+
+            elif action.action_type == ActionType.HOLD:
+                feedback.append(
+                    f"Continuing to monitor. "
+                    f"error_rate={self.metrics.error_rate_pct:.2f}% "
+                    f"(SLA={self.sla.max_error_rate_pct}%)."
+                )
+                # After 3 monitoring steps, force terminal
+                if self.monitoring_step >= 3:
+                    self.deployment_phase = "terminal"
+                    return True
+                return False
+
+            else:
+                feedback.append(f"Invalid action {action.action_type.value} in monitoring phase.")
+                return False
+
         return True
 
     def _apply_incident_action(self, action: Action, feedback: list[str]) -> bool:
@@ -549,10 +636,7 @@ class MLOpsSimulator:
             self.metrics.error_rate_pct   = max(0.5, self.metrics.error_rate_pct - 2.0)
             feedback.append(f"{component} restarted. Root cause resolved. Downstream recovering.")
 
-        elif component in [
-            Component.MODEL_SERVING.value,
-            Component.DATA_PIPELINE.value,
-        ]:
+        elif component in [Component.MODEL_SERVING.value, Component.DATA_PIPELINE.value]:
             if alert:
                 alert.resolved = True
             self.fix_sequence.append(component)

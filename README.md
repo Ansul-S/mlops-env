@@ -4,7 +4,7 @@ emoji: 🚀
 colorFrom: blue
 colorTo: green
 sdk: docker
-app_port: 7860
+app_port: 8000
 pinned: false
 ---
 
@@ -80,7 +80,7 @@ Any action that worsens system metrics scores `safety = 0.0` regardless of other
 
 ```
 Entry point : env.environment:MLOpsEnv
-Framework   : FastAPI (port 7860)
+Framework   : FastAPI (port 8000)
 Tasks       : 3 (easy → medium → hard)
 Reward type : Dense, multi-dimensional (0.0–1.0 per step)
 Seed        : Configurable per episode (pass seed in /reset body)
@@ -188,10 +188,10 @@ cd mlops-env
 pip install -r requirements.txt
 
 # Start server
-uvicorn server:app --host 0.0.0.0 --port 7860
+uvicorn server:app --host 0.0.0.0 --port 8000
 
 # Test
-curl -X POST http://localhost:7860/reset \
+curl -X POST http://localhost:8000/reset \
   -H "Content-Type: application/json" \
   -d '{"task_id": "data_quality_triage"}'
 ```
@@ -210,7 +210,7 @@ python inference.py
 
 ```bash
 docker build -t mlops-env .
-docker run -p 7860:7860 mlops-env
+docker run -p 8000:8000 mlops-env
 ```
 
 ---

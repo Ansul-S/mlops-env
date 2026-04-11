@@ -73,7 +73,7 @@ reward:
 
 server:
   framework: fastapi
-  port: 7860
+  port: 8000
   endpoints:
     - method: POST
       path: /reset
