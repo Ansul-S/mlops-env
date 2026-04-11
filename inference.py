@@ -74,70 +74,14 @@ def log_end(success, steps, score, rewards):
 # ── Deterministic fallback actions ───────────────────────────────────────────
 
 def fallback(task_id, obs):
-    if task_id == "data_quality_triage":
-        records     = obs.get("data_records", [])
-        unprocessed = [r for r in records if not r.get("processed", False)]
-        if not unprocessed:
-            return {"action_type": "accept_record", "target_id": None,
-                    "parameters": {}, "reasoning": "all done"}
-        rec    = unprocessed[0]
-        rid    = rec["record_id"]
-        issues = rec.get("detected_issues", [])
-        fields = rec.get("fields", {})
-        schema = rec.get("schema_expected", {})
-        if "null_value" in issues:
-            nf   = next((f for f, v in fields.items() if v is None), None)
-            et   = schema.get(nf, "str") if nf else "str"
-            fill = 0.0 if et == "float" else (0 if et == "int" else "unknown")
-            return {"action_type": "fix_null", "target_id": rid,
-                    "parameters": {"field": nf, "fill_value": fill},
-                    "reasoning": "fix null"}
-        elif "type_mismatch" in issues:
-            bf = next((f for f, v in fields.items()
-                       if isinstance(v, str) and "_bad" in str(v)), None)
-            tt = schema.get(bf, "str") if bf else "str"
-            return {"action_type": "cast_type", "target_id": rid,
-                    "parameters": {"field": bf, "target_type": tt},
-                    "reasoning": "fix type"}
-        elif "outlier" in issues:
-            of = next((f for f, v in fields.items()
-                       if isinstance(v, (int, float)) and v > 100000), None)
-            return {"action_type": "remove_outlier", "target_id": rid,
-                    "parameters": {"field": of}, "reasoning": "outlier"}
-        elif "duplicate" in issues:
-            return {"action_type": "flag_duplicate", "target_id": rid,
-                    "parameters": {}, "reasoning": "duplicate"}
-        else:
-            return {"action_type": "accept_record", "target_id": rid,
-                    "parameters": {}, "reasoning": "clean"}
-    elif task_id == "deployment_decision":
-        return {"action_type": "deploy_canary", "target_id": None,
-                "parameters": {"canary_pct": 5, "rollback_threshold_pct": 0.4},
-                "reasoning": "canary — challenger breaches SLA"}
-    else:
-        # Use metrics to track progress — history strings don't contain component names
-        step     = obs.get("step", 0)
-        metrics  = obs.get("system_metrics", {})
-        latency  = metrics.get("latency_p99_ms", 999.0)
-        alerts   = obs.get("alerts", [])
-        resolved = sum(1 for a in alerts if a.get("resolved", False))
-
-        if step == 0:
-            return {"action_type": "investigate", "target_id": None,
-                    "parameters": {"component": "feature_store"},
-                    "reasoning": "investigate feature_store as root cause"}
-        elif latency > 100.0:
-            return {"action_type": "restart_service", "target_id": None,
-                    "parameters": {"component": "feature_store"},
-                    "reasoning": "restart feature_store to fix root cause"}
-        elif resolved < 2:
-            return {"action_type": "restart_service", "target_id": None,
-                    "parameters": {"component": "model_serving"},
-                    "reasoning": "restart model_serving downstream"}
-        else:
-            return {"action_type": "restart_service", "target_id": None,
-                    "parameters": {"component": "data_pipeline"},
-                    "reasoning": "restart data_pipeline downstream"}
+    """Generic baseline fallback — picks first available action."""
+    avail = obs.get("available_actions", [])
+    return {
+        "action_type": avail[0] if avail else "hold",
+        "target_id": None,
+        "parameters": {},
+        "reasoning": "generic baseline fallback"
+    }
 
 # ── LLM action ────────────────────────────────────────────────────────────────
 
@@ -206,6 +150,8 @@ def run_task(client, task_id):
                 reward  = float(sr.reward)
                 done    = bool(sr.done)
                 obs     = sr.observation.model_dump(mode="json")
+                # Fix Q: read env-level action errors from observation
+                err_str = err_str or obs.get("last_action_error") or None
             except Exception as ex:
                 reward  = 0.0
                 done    = True
@@ -217,7 +163,10 @@ def run_task(client, task_id):
             if done:
                 break
 
-        score   = round(sum(rewards) / len(rewards), 4) if rewards else 0.0
+        # Fix P: normalize against max possible reward per step
+        MAX_TOTAL = MAX_STEPS * 1.0
+        score   = sum(rewards) / MAX_TOTAL if rewards else 0.0
+        score   = round(min(0.9949, max(0.0051, score)), 4)
         success = score >= SUCCESS_THRESHOLD
 
     except Exception as ex:
@@ -226,8 +175,10 @@ def run_task(client, task_id):
             rewards     = [0.0]
             steps_taken = 1
             log_step(1, "none", 0.0, True, err)
-        score   = round(sum(rewards) / len(rewards), 4) if rewards else 0.0
-        success = False
+        MAX_TOTAL = MAX_STEPS * 1.0
+        score     = sum(rewards) / MAX_TOTAL if rewards else 0.0
+        score     = round(min(0.9949, max(0.0051, score)), 4)
+        success   = False
 
     finally:
         log_end(success, steps_taken, score, rewards)

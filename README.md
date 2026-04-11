@@ -83,7 +83,7 @@ Entry point : env.environment:MLOpsEnv
 Framework   : FastAPI (port 7860)
 Tasks       : 3 (easy → medium → hard)
 Reward type : Dense, multi-dimensional (0.0–1.0 per step)
-Seed        : 42 (fully deterministic and reproducible)
+Seed        : Configurable per episode (pass seed in /reset body)
 ```
 
 ---
@@ -110,26 +110,15 @@ Seed        : 42 (fully deterministic and reproducible)
 
 **Agent must:** Choose deployment strategy + parameters. Reasoning quality is graded.
 
-**Correct answer:** `deploy_canary(canary_pct=5, rollback_threshold_pct=0.4)`
+**Agent must reason about:** accuracy improvement vs. SLA violation tradeoff to determine the safest deployment strategy.
 
-**Why wrong answers fail:**
-- `deploy_full` → challenger error rate violates SLA → `correctness = 0.0`
-- `rollback` → no regression to roll back from → `correctness = 0.2`
-- `hold` → safe but no progress → `correctness = 0.4`
-
-**Baseline score: 0.96**
+**Baseline score: 0.30**
 
 ---
 
 ### Task 3 — Hard: `incident_cascade`
 
 **Scenario:** 3 simultaneous alerts. One is root cause (feature_store latency spike at 847ms). Two are downstream effects. Agent has 15 steps.
-
-**Optimal sequence (4 steps):**
-1. `investigate(feature_store)` → confirm root cause
-2. `restart_service(feature_store)` → fix root cause
-3. `restart_service(model_serving)` → resolve downstream
-4. `restart_service(data_pipeline)` → drain backlog
 
 **Why it's hard:**
 - Fixing downstream before root cause wastes steps and scores low
@@ -233,7 +222,7 @@ Tested with `meta-llama/Llama-3.3-70B-Instruct` via HuggingFace Inference Provid
 | Task | Difficulty | Steps | Score |
 |---|---|---|---|
 | data_quality_triage | Easy | 20/30 | **0.83** |
-| deployment_decision | Medium | 1/10 | **0.96** |
+| deployment_decision | Medium | 1/10 | **0.30** |
 | incident_cascade | Hard | 4/15 | **0.43** |
 | **Overall** | | | **0.74** |
 
