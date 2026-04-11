@@ -7,6 +7,7 @@ Every field is documented — judges read models to understand your environment.
 
 from __future__ import annotations
 
+import uuid
 from enum import Enum
 from typing import Any, Optional
 
@@ -88,17 +89,14 @@ class DataRecord(BaseModel):
     fields:          dict[str, Any]
     schema_expected: dict[str, str]          # field → expected Python type string
     detected_issues: list[DataIssueType] = Field(default_factory=list)
-    
     ground_truth_action: Optional[str] = Field(
         default=None,
         exclude=True,   # NEVER serialized — grader use only
-        repr=False,     # Hidden from console logs and print()
         description="Correct action key — used only by grader, not shown to agent"
     )
     ground_truth_params: dict[str, Any] = Field(
         default_factory=dict,
         exclude=True,   # NEVER serialized — grader use only
-        repr=False,     # Hidden from console logs and print()
     )
     processed: bool = False
 
@@ -110,11 +108,9 @@ class Alert(BaseModel):
     component:         Component
     message:           str
     triggered_at_step: int
-    
     is_root_cause:     bool = Field(
         default=False,
         exclude=True,   # NEVER serialized — grader use only
-        repr=False,     # Hidden from console logs and print()
         description="Internal flag — used by grader only"
     )
     acknowledged:  bool = False
@@ -250,6 +246,40 @@ class ResetResult(BaseModel):
 class StateResult(BaseModel):
     """Return type of state() — matches OpenEnv spec."""
     observation: Observation
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rich state object  (Fix I — exposed via /state for debugging + testing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MLOpsState(BaseModel):
+    """
+    Rich state object for debugging, testing, and human review.
+    Exposes internal episode info not visible in Observation.
+    """
+    task_id:           str
+    step:              int
+    episode_id:        str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique ID per episode — proves session isolation"
+    )
+    root_cause:        Optional[str] = Field(
+        default=None,
+        description="Incident root cause (exposed for testing/eval)"
+    )
+    alerts_resolved:   int = Field(default=0)
+    alerts_total:      int = Field(default=0)
+    last_action_type:  Optional[str] = Field(default=None)
+    last_reward:       Optional[float] = Field(default=None)
+    cum_reward:        float = Field(default=0.0, description="Running reward total")
+    deployment_phase:  Optional[str] = Field(
+        default=None,
+        description="deployment_decision phase: strategy|monitoring|terminal"
+    )
+    seed:              Optional[int] = Field(
+        default=None,
+        description="Episode seed for reproducibility"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

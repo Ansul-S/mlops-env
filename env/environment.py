@@ -40,6 +40,9 @@ class MLOpsEnv:
       - deployment_decision  (medium) — choose safe deployment strategy under SLA
       - incident_cascade     (hard)   — diagnose + resolve a 3-alert incident
 
+    Fix J: SUPPORTS_CONCURRENT_SESSIONS=True — each instance has fully isolated
+    state (separate MLOpsSimulator per episode, no shared mutable state).
+
     Usage:
         env = MLOpsEnv()
         result = env.reset("data_quality_triage")
@@ -50,6 +53,9 @@ class MLOpsEnv:
             result = env.step(action)
             obs, reward, done = result.observation, result.reward, result.done
     """
+
+    # Fix J: each MLOpsEnv instance has fully isolated state
+    SUPPORTS_CONCURRENT_SESSIONS = True
 
     # Reward weights — consistent across all tasks
     WEIGHTS = {

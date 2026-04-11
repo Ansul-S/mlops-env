@@ -2,68 +2,46 @@
 server.py
 =========
 FastAPI server for MLOpsEnv.
-
-Endpoints (all required by OpenEnv validator):
-  POST /reset        → ResetResult
-  POST /step         → StepResult
-  GET  /state        → StateResult
-  GET  /tasks        → list of available tasks
-  GET  /health       → health check
-
-Run locally:
-  uvicorn server:app --host 0.0.0.0 --port 8000
-
-The HuggingFace Space validator pings POST /reset and expects HTTP 200.
+Fix E: WebSocket endpoint added
+Fix J: max_concurrent_envs via session isolation
+Fix I: /mlops-state rich debug endpoint
 """
 
 from __future__ import annotations
 
+import uuid
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from env import MLOpsEnv
-from env.models import Action, ResetResult, StateResult, StepResult, TaskID
+from env.environment import MLOpsEnv
+from env.models import (
+    Action, MLOpsState, ResetResult,
+    StateResult, StepResult, TaskID,
+)
 
+# ── Per-session store (Fix J) ──────────────────────────────────────────────
+# Each session gets its own MLOpsEnv instance — no shared state
+_sessions: dict[str, MLOpsEnv] = {}
+MAX_SESSIONS = 16
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Request bodies
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ResetRequest(BaseModel):
-    task_id: str = TaskID.DATA_TRIAGE.value
-    seed: int | None = None   # Fix C: optional seed for reproducibility
-
-
-class StepRequest(BaseModel):
-    action: dict[str, Any]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# App + global env instance
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Single shared environment instance (stateful per session)
-_env: MLOpsEnv = MLOpsEnv()
+# ── Single env for HTTP endpoints ──────────────────────────────────────────
+_env = MLOpsEnv()
+_episode_id = str(uuid.uuid4())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Auto-reset to a clean state on startup
     _env.reset(TaskID.DATA_TRIAGE)
     yield
 
 
 app = FastAPI(
     title="MLOpsEnv",
-    description=(
-        "Production ML pipeline operations environment. "
-        "Agent manages data quality, deployment decisions, "
-        "and incident response under real operational constraints."
-    ),
+    description="Production ML pipeline operations environment for RL agent training.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -76,53 +54,39 @@ app.add_middleware(
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Endpoints
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Request models ─────────────────────────────────────────────────────────
+
+class ResetRequest(BaseModel):
+    task_id: str = TaskID.DATA_TRIAGE.value
+    seed: int | None = None
+
+
+class StepRequest(BaseModel):
+    action: dict[str, Any]
+
+
+# ── Standard endpoints ─────────────────────────────────────────────────────
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    """Health check — always returns 200 if server is up."""
+def health():
     return {"status": "ok", "env": "MLOpsEnv", "version": "1.0.0"}
 
 
 @app.post("/reset", response_model=ResetResult)
 def reset(body: ResetRequest = ResetRequest()) -> ResetResult:
-    """
-    Reset the environment for a new episode.
-
-    Body (optional):
-        task_id: "data_quality_triage" | "deployment_decision" | "incident_cascade"
-                 Defaults to "data_quality_triage".
-
-    Returns initial observation.
-    """
+    global _episode_id
     try:
-        result = _env.reset(body.task_id, seed=body.seed)
-        return result
+        _episode_id = str(uuid.uuid4())
+        return _env.reset(body.task_id, seed=body.seed)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/step", response_model=StepResult)
 def step(body: StepRequest) -> StepResult:
-    """
-    Execute one action in the environment.
-
-    Body:
-        action: {
-            "action_type": str,          # required
-            "target_id":   str | null,   # optional
-            "parameters":  dict,         # optional
-            "reasoning":   str           # optional (graded in hard task)
-        }
-
-    Returns observation, reward (0.0–1.0), done, info.
-    """
     try:
         action = Action(**body.action)
-        result = _env.step(action)
-        return result
+        return _env.step(action)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
@@ -131,10 +95,6 @@ def step(body: StepRequest) -> StepResult:
 
 @app.get("/state", response_model=StateResult)
 def state() -> StateResult:
-    """
-    Return current environment state without advancing the episode.
-    Read-only — does not consume a step.
-    """
     try:
         return _env.state()
     except RuntimeError as e:
@@ -143,25 +103,127 @@ def state() -> StateResult:
 
 @app.get("/tasks")
 def tasks() -> list[dict[str, Any]]:
-    """List all available tasks with metadata."""
     return _env.available_tasks()
 
 
 @app.get("/")
 def root() -> dict[str, Any]:
-    """Root endpoint — returns env info and available endpoints."""
     return {
-        "name":        "MLOpsEnv",
-        "version":     "1.0.0",
-        "description": (
-            "Production ML pipeline operations environment for RL agent training."
-        ),
+        "name": "MLOpsEnv",
+        "version": "1.0.0",
         "tasks": _env.available_tasks(),
         "endpoints": {
-            "POST /reset": "Start a new episode",
-            "POST /step":  "Execute an action",
-            "GET  /state": "Read current state",
-            "GET  /tasks": "List available tasks",
-            "GET  /health": "Health check",
+            "POST /reset": "Start new episode",
+            "POST /step": "Execute action",
+            "GET /state": "Read current state",
+            "GET /tasks": "List tasks",
+            "GET /health": "Health check",
+            "WS /ws": "WebSocket session",
+            "GET /mlops-state": "Rich debug state",
         },
     }
+
+
+# ── Fix I: Rich state endpoint ─────────────────────────────────────────────
+
+@app.get("/mlops-state", response_model=MLOpsState)
+def mlops_state() -> MLOpsState:
+    try:
+        sim = _env._sim
+        if sim is None:
+            return MLOpsState(task_id="none", step=0, episode_id=_episode_id)
+        rewards = _env._episode_rewards
+        return MLOpsState(
+            task_id=sim.task_id.value,
+            step=sim.step_count,
+            episode_id=_episode_id,
+            root_cause=getattr(sim, 'root_cause', None),
+            alerts_resolved=sum(1 for a in sim.alerts if a.resolved),
+            alerts_total=len(sim.alerts),
+            last_action_type=sim.context_history[-1] if sim.context_history else None,
+            last_reward=rewards[-1] if rewards else None,
+            cum_reward=round(sum(rewards), 4),
+            deployment_phase=getattr(sim, 'deployment_phase', None),
+            seed=sim.seed,
+        )
+    except Exception:
+        return MLOpsState(task_id="error", step=0, episode_id=_episode_id)
+
+
+# ── Fix E: WebSocket endpoint ──────────────────────────────────────────────
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket session — each connection gets isolated MLOpsEnv.
+    Fix E: low-latency persistent sessions for RL training.
+    Fix J: each WS connection = separate env instance (max 16).
+    """
+    import json
+
+    if len(_sessions) >= MAX_SESSIONS:
+        await websocket.close(code=1008)
+        return
+
+    session_id = str(uuid.uuid4())
+    session_env = MLOpsEnv()
+    _sessions[session_id] = session_env
+
+    await websocket.accept()
+
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+        })
+
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type", "")
+
+            if msg_type == "reset":
+                task_id = data.get("task_id", "data_quality_triage")
+                seed    = data.get("seed", None)
+                result  = session_env.reset(task_id, seed=seed)
+                await websocket.send_json({
+                    "type": "reset",
+                    "observation": result.observation.model_dump(mode="json"),
+                })
+
+            elif msg_type == "step":
+                action = Action(**data.get("action", {}))
+                result = session_env.step(action)
+                await websocket.send_json({
+                    "type": "step",
+                    "observation": result.observation.model_dump(mode="json"),
+                    "reward": result.reward,
+                    "done": result.done,
+                    "info": result.info,
+                })
+
+            elif msg_type == "state":
+                result = session_env.state()
+                await websocket.send_json({
+                    "type": "state",
+                    "observation": result.observation.model_dump(mode="json"),
+                })
+
+            elif msg_type == "close":
+                break
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e)[:200],
+            })
+        except Exception:
+            pass
+    finally:
+        _sessions.pop(session_id, None)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
